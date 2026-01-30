@@ -1,7 +1,13 @@
 [package]
 name = "git-wiz"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+description = "A rational AI pair programmer that generates conventional commit messages."
+license = "MIT"
+repository = "https://github.com/meday/git-wiz"
+keywords = ["git", "ai", "cli", "commit", "llm"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

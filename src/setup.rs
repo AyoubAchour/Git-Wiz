@@ -9,9 +9,17 @@ pub fn run_setup() -> Result<Config> {
 
     // 1. Select Provider
     let provider = select("Select your AI Provider")
-        .item(Provider::Gemini, "Google Gemini", "Gemini 3 / 2.5")
-        .item(Provider::Anthropic, "Anthropic", "Claude Sonnet / Haiku")
-        .item(Provider::OpenAI, "OpenAI", "GPT-5 / GPT-4o")
+        .item(
+            Provider::Gemini,
+            "Google Gemini",
+            "Gemini 2.5 / 3 (Pro & Flash)",
+        )
+        .item(
+            Provider::Anthropic,
+            "Anthropic",
+            "Claude 4.5 (Sonnet / Opus)",
+        )
+        .item(Provider::OpenAI, "OpenAI", "GPT-5.2")
         .interact()?;
 
     // 2. Input API Key
@@ -77,7 +85,7 @@ fn select_model_gemini() -> Result<String> {
 
     if selection == "custom" {
         Ok(input("Enter custom model name")
-            .placeholder("e.g. gemini-1.5-pro")
+            .placeholder("e.g. gemini-2.5-flash")
             .interact()?)
     } else {
         Ok(selection.to_string())
@@ -89,29 +97,15 @@ fn select_model_anthropic() -> Result<String> {
         .item(
             "claude-sonnet-4-5",
             "Claude 4.5 Sonnet",
-            "Best balance of intelligence & speed",
+            "Recommended default",
         )
-        .item(
-            "claude-haiku-4-5",
-            "Claude 4.5 Haiku",
-            "Fastest, near-frontier intelligence",
-        )
-        .item(
-            "claude-opus-4-5",
-            "Claude 4.5 Opus",
-            "Premium, maximum intelligence",
-        )
-        .item(
-            "claude-3-5-sonnet-20240620",
-            "Claude 3.5 Sonnet",
-            "Legacy stable",
-        )
+        .item("claude-opus-4-5", "Claude 4.5 Opus", "Maximum intelligence")
         .item("custom", "Other...", "Enter a custom model name")
         .interact()?;
 
     if selection == "custom" {
         Ok(input("Enter custom model name")
-            .placeholder("e.g. claude-3-opus-20240229")
+            .placeholder("e.g. claude-sonnet-4-5")
             .interact()?)
     } else {
         Ok(selection.to_string())
@@ -120,16 +114,13 @@ fn select_model_anthropic() -> Result<String> {
 
 fn select_model_openai() -> Result<String> {
     let selection = select("Select OpenAI Model")
-        .item("gpt-5.2", "GPT-5.2", "Best for coding & agents")
-        .item("gpt-5-mini", "GPT-5 Mini", "Fast & cost-efficient")
-        .item("gpt-4o", "GPT-4o", "Reliable, flexible")
-        .item("o3", "o3", "Advanced reasoning")
+        .item("gpt-5.2", "GPT-5.2", "Recommended default")
         .item("custom", "Other...", "Enter a custom model name")
         .interact()?;
 
     if selection == "custom" {
         Ok(input("Enter custom model name")
-            .placeholder("e.g. gpt-4-turbo")
+            .placeholder("e.g. gpt-5.2")
             .interact()?)
     } else {
         Ok(selection.to_string())

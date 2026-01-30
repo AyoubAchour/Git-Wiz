@@ -1,0 +1,18 @@
+# Build Artifacts
+/target/
+
+# IDE & OS Files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Windows
+*.pdb
+
+# Local Configuration (Secrets)
+.env
+config.json
+secrets.toml

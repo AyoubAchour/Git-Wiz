@@ -6,10 +6,11 @@
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Rust](https://img.shields.io/badge/built_with-Rust-orange.svg)
+![Release](https://img.shields.io/github/v/release/meday/git-wiz)
 
 ## ✨ Features
 
-- **🧠 Multi-Model Intelligence**: First-class support for **Google Gemini** (3 Pro/Flash), **Anthropic Claude** (3.5 Sonnet), and **OpenAI GPT** (4o).
+- **🧠 Multi-Model Intelligence**: First-class support for **Google Gemini** (3 Pro/Flash), **Anthropic Claude** (4.5 Sonnet), and **OpenAI GPT** (5.2).
 - **🎨 Beautiful TUI**: A modern, minimal terminal interface powered by `cliclack`.
 - **⚡ Blazing Fast**: Native Rust binary with zero runtime dependencies.
 - **🔒 Secure & Local**: Your API keys are stored locally in your OS's secure configuration directory.
@@ -48,6 +49,12 @@ Now you can run `git-wiz` (or just `gw` if you alias it) from anywhere!
    - The tool will analyze your `git diff`.
    - It will generate a structured commit message.
    - You can **Confirm**, **Edit**, or **Regenerate** it.
+
+### 💡 Pro Tips
+
+- **Alias it**: Add `alias gw='git-wiz'` to your `.zshrc` or `.bashrc` to save keystrokes.
+- **Mock Mode**: Run `git-wiz --mock` to see how it works without using any API credits.
+- **Force Config**: Use `git-wiz --config` if you want to switch providers or update your API key.
 
 ### First Run Setup
 On your first run, Git Wiz will launch an interactive setup wizard to help you choose your AI provider and save your API key.

@@ -10,6 +10,13 @@ use cliclack::{input, log, select};
 use config::{Config, Provider};
 use generator::{AnthropicGenerator, GeminiGenerator, Generator, MockGenerator, OpenAIGenerator};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReleaseFailureAction {
+    RunCargoFmt,
+    RevertReleaseChanges,
+    Back,
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -171,6 +178,9 @@ async fn main() -> Result<()> {
             MainAction::Release => {
                 if let Err(e) = run_release_flow(&generator).await {
                     ui::print_error(&e.to_string());
+                    if let Err(e) = handle_release_failure_recovery(&e.to_string()) {
+                        ui::print_error(&e.to_string());
+                    }
                 }
             }
             MainAction::Config => {
@@ -745,9 +755,11 @@ async fn run_release_flow(generator: &Generator) -> Result<()> {
 
     // 3) Local checks (fast gate before we tag/push)
     ui::print_info("Running local checks...");
-    run_cmd("cargo", &["fmt", "--check"]).context("cargo fmt --check failed")?;
-    run_cmd("cargo", &["clippy", "--", "-D", "warnings"]).context("cargo clippy failed")?;
-    run_cmd("cargo", &["test", "--locked"]).context("cargo test --locked failed")?;
+    run_cmd("cargo", &["fmt", "--check"]).context("Release preflight failed: cargo fmt --check")?;
+    run_cmd("cargo", &["clippy", "--", "-D", "warnings"])
+        .context("Release preflight failed: cargo clippy")?;
+    run_cmd("cargo", &["test", "--locked"])
+        .context("Release preflight failed: cargo test --locked")?;
 
     // 4) Stage version bump files (Cargo.toml + Cargo.lock if changed)
     git::stage_all()?;
@@ -1065,4 +1077,62 @@ fn tag_exists_remote(remote: &str, tag: &str) -> Result<bool> {
 
 fn create_annotated_tag(tag: &str, message: &str) -> Result<()> {
     run_cmd("git", &["tag", "-a", tag, "-m", message])
+}
+
+fn handle_release_failure_recovery(error_message: &str) -> Result<()> {
+    ui::print_info("Release did not complete.");
+    ui::print_info("No tag was pushed, so CI release/publish was not triggered.");
+    ui::print_info(
+        "However, the release flow may have already modified files like Cargo.toml / Cargo.lock.",
+    );
+    ui::print_info("Choose a recovery action below:");
+
+    // Heuristic: if rustfmt failed, offer auto-fix first.
+    let mut menu = select("Release recovery");
+    menu = menu.item(
+        ReleaseFailureAction::RunCargoFmt,
+        "Run cargo fmt",
+        "Auto-fix formatting, then you can re-run Release",
+    );
+    menu = menu.item(
+        ReleaseFailureAction::RevertReleaseChanges,
+        "Revert release changes",
+        "Restore Cargo.toml and Cargo.lock to the last committed state",
+    );
+    menu = menu.item(ReleaseFailureAction::Back, "Back", "Return to main menu");
+
+    let choice = menu.interact()?;
+
+    match choice {
+        ReleaseFailureAction::RunCargoFmt => {
+            ui::print_info("Running: cargo fmt");
+            run_cmd("cargo", &["fmt"])?;
+            ui::print_success("Formatting complete. Re-run Release when ready.");
+        }
+        ReleaseFailureAction::RevertReleaseChanges => {
+            // Only revert the two files we touch in the release bump.
+            // Use `git restore` which works on modern git; if it fails, fall back to checkout.
+            let restore = std::process::Command::new("git")
+                .args(["restore", "Cargo.toml", "Cargo.lock"])
+                .status();
+
+            match restore {
+                Ok(s) if s.success() => {
+                    ui::print_success("Reverted Cargo.toml and Cargo.lock.");
+                }
+                _ => {
+                    run_cmd("git", &["checkout", "--", "Cargo.toml", "Cargo.lock"])?;
+                    ui::print_success("Reverted Cargo.toml and Cargo.lock.");
+                }
+            }
+        }
+        ReleaseFailureAction::Back => {}
+    }
+
+    // Extra guidance if formatting was the likely culprit
+    if error_message.contains("fmt") {
+        ui::print_info("Tip: If this failed due to formatting, run `cargo fmt` and try again.");
+    }
+
+    Ok(())
 }

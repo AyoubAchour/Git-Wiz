@@ -6,7 +6,6 @@ mod git;
 mod release;
 mod setup;
 mod tui;
-mod ui;
 
 fn main() -> Result<()> {
     // Ensure terminal colors are enabled on Windows (useful for any non-TUI fallback/logging)

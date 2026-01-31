@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui_textarea::{Input, TextArea};
@@ -11,6 +9,7 @@ use crate::generator::{
 use crate::git;
 use crate::release;
 use crate::setup;
+use crate::tui::runtime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalKind {
@@ -200,7 +199,6 @@ pub enum Focus {
 pub enum StatusLevel {
     Info,
     Success,
-    Warn,
     Error,
 }
 
@@ -208,7 +206,6 @@ pub enum StatusLevel {
 pub struct StatusLine {
     pub level: StatusLevel,
     pub message: String,
-    pub at: Instant,
 }
 
 pub struct App {
@@ -284,7 +281,6 @@ impl App {
                 level: StatusLevel::Info,
                 message: "Press ? for help. g=generate, Enter=commit, c=clear. Esc quits."
                     .to_string(),
-                at: Instant::now(),
             }),
             logs: vec![],
 
@@ -296,7 +292,6 @@ impl App {
         self.status = Some(StatusLine {
             level,
             message: message.into(),
-            at: Instant::now(),
         });
     }
 
@@ -899,23 +894,34 @@ impl App {
             }
             ConfirmPurpose::ReleaseTrigger => {
                 if let Some(v) = self.pending_release_version.clone() {
-                    if let Err(e) = self.perform_release(&v) {
-                        self.set_status(StatusLevel::Error, e.to_string());
-                        self.log(format!("Release failed: {e}"));
-                    } else {
-                        let tag = format!("v{}", v);
-                        self.set_status(
-                            StatusLevel::Success,
-                            format!("Release initiated: pushed tag {}", tag),
-                        );
-                        self.log(format!("Release initiated: {}", tag));
+                    // Suspend the TUI for the whole release execution so cargo/clippy/test output
+                    // does not corrupt the terminal UI. The release pipeline intentionally streams
+                    // output to stdout/stderr for transparency.
+                    let result = runtime::with_tui_suspended(|| self.perform_release(&v));
 
-                        if let Some(repo_https) = origin_https_repo_url().ok().flatten() {
-                            self.log(format!(
-                                "Track progress (Actions): {}/actions?query=workflow%3ARelease",
-                                repo_https
-                            ));
-                            self.log(format!("Release page: {}/releases/tag/{}", repo_https, tag));
+                    match result {
+                        Ok(_) => {
+                            let tag = format!("v{}", v);
+                            self.set_status(
+                                StatusLevel::Success,
+                                format!("Release initiated: pushed tag {}", tag),
+                            );
+                            self.log(format!("Release initiated: {}", tag));
+
+                            if let Some(repo_https) = origin_https_repo_url().ok().flatten() {
+                                self.log(format!(
+                                    "Track progress (Actions): {}/actions?query=workflow%3ARelease",
+                                    repo_https
+                                ));
+                                self.log(format!(
+                                    "Release page: {}/releases/tag/{}",
+                                    repo_https, tag
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            self.set_status(StatusLevel::Error, e.to_string());
+                            self.log(format!("Release failed: {}", e));
                         }
                     }
                 } else {

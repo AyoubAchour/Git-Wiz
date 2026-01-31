@@ -281,7 +281,7 @@ fn draw_diff_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
         Line::from(vec![
             Span::styled("Source: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                truncate_to_width(&app.diff_view_source.label(), 28),
+                truncate_to_width(app.diff_view_source.label(), 28),
                 Style::default().fg(Color::White),
             ),
         ]),
@@ -644,7 +644,6 @@ fn draw_footer(f: &mut Frame<'_>, app: &App, area: Rect) {
         Some(s) => match s.level {
             StatusLevel::Info => ("INFO", Color::Cyan),
             StatusLevel::Success => ("OK", Color::Green),
-            StatusLevel::Warn => ("WARN", Color::Yellow),
             StatusLevel::Error => ("ERR", Color::Red),
         },
         None => ("", Color::DarkGray),

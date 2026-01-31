@@ -60,14 +60,20 @@ pub fn dispatch_key(app: &mut App, key: KeyEvent) -> bool {
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {
                 // Some actions require suspending the TUI (raw mode + alt screen)
-                // so they can run interactive terminal I/O safely (e.g. setup wizard, git add -p).
+                // so they can run interactive terminal I/O safely (e.g. setup wizard, git add -p),
+                // OR to avoid terminal corruption while streaming command output (release pipeline).
                 if let Some(action) = app.selected_action() {
                     return match action {
                         ActionItem::RunSetupWizard
                         | ActionItem::StagePatch
-                        | ActionItem::UnstagePatch => {
-                            // Ensure interactive operations run outside raw mode / alt screen.
-                            // `activate_selected_action` will update status/logs as needed.
+                        | ActionItem::UnstagePatch
+                        | ActionItem::ReleasePatch
+                        | ActionItem::ReleaseMinor
+                        | ActionItem::ReleaseMajor
+                        | ActionItem::ReleaseCustom => {
+                            // Ensure interactive operations (and long-running, output-heavy operations)
+                            // run outside raw mode / alt screen. This avoids the "TUI crashes and clippy output floods"
+                            // symptom by letting the terminal behave normally.
                             let _ = runtime::with_tui_suspended(|| {
                                 let _handled = app.activate_selected_action();
                                 Ok(())

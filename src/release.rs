@@ -22,15 +22,7 @@ pub enum BumpKind {
     Major,
 }
 
-impl BumpKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            BumpKind::Patch => "patch",
-            BumpKind::Minor => "minor",
-            BumpKind::Major => "major",
-        }
-    }
-}
+impl BumpKind {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreflightConfig {

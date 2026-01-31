@@ -678,7 +678,7 @@ async fn run_release_flow(generator: &Generator) -> Result<()> {
             Back,
         }
 
-        let choice = select(&format!(
+        let choice = select(format!(
             "You are on branch '{}', not 'master'. Continue anyway?",
             branch
         ))
@@ -694,6 +694,14 @@ async fn run_release_flow(generator: &Generator) -> Result<()> {
             return Ok(());
         }
     }
+
+    // Preflight checks BEFORE bumping version, so failures don't dirty the working tree.
+    ui::print_info("Running preflight checks (before version bump)...");
+    run_cmd("cargo", &["fmt", "--check"]).context("Release preflight failed: cargo fmt --check")?;
+    run_cmd("cargo", &["clippy", "--", "-D", "warnings"])
+        .context("Release preflight failed: cargo clippy")?;
+    run_cmd("cargo", &["test", "--locked"])
+        .context("Release preflight failed: cargo test --locked")?;
 
     let bump = select("Release: how do you want to bump the version?")
         .item(ReleaseBump::Patch, "Patch", "x.y.(z+1)")
@@ -730,17 +738,14 @@ async fn run_release_flow(generator: &Generator) -> Result<()> {
         Proceed,
         Cancel,
     }
-    let confirm = select(&format!(
-        "Bump version {} -> {} ?",
-        old_version, new_version
-    ))
-    .item(
-        Confirm::Proceed,
-        "Proceed",
-        "Update files, run checks, commit, tag, push tag",
-    )
-    .item(Confirm::Cancel, "Cancel", "Return to main menu")
-    .interact()?;
+    let confirm = select(format!("Bump version {} -> {} ?", old_version, new_version))
+        .item(
+            Confirm::Proceed,
+            "Proceed",
+            "Update files, generate lockfile, commit, tag, push tag",
+        )
+        .item(Confirm::Cancel, "Cancel", "Return to main menu")
+        .interact()?;
     if confirm == Confirm::Cancel {
         return Ok(());
     }
@@ -753,18 +758,10 @@ async fn run_release_flow(generator: &Generator) -> Result<()> {
     // Instead, we refresh the lockfile if needed.
     let _ = run_cmd("cargo", &["generate-lockfile"]).ok();
 
-    // 3) Local checks (fast gate before we tag/push)
-    ui::print_info("Running local checks...");
-    run_cmd("cargo", &["fmt", "--check"]).context("Release preflight failed: cargo fmt --check")?;
-    run_cmd("cargo", &["clippy", "--", "-D", "warnings"])
-        .context("Release preflight failed: cargo clippy")?;
-    run_cmd("cargo", &["test", "--locked"])
-        .context("Release preflight failed: cargo test --locked")?;
-
-    // 4) Stage version bump files (Cargo.toml + Cargo.lock if changed)
+    // 3) Stage version bump files (Cargo.toml + Cargo.lock if changed)
     git::stage_all()?;
 
-    // 5) Generate commit message for release bump (staged diff)
+    // 4) Generate commit message for release bump (staged diff)
     //    We keep it deterministic: staged-only diff + hint.
     let hint = Some(format!("release: bump version to v{}", new_version));
     let diff = git::get_diff(git::DiffSource::Staged)?;
@@ -775,10 +772,10 @@ async fn run_release_flow(generator: &Generator) -> Result<()> {
         .await
         .unwrap_or_else(|_| format!("chore(release): v{}", new_version));
 
-    // 6) Commit
+    // 5) Commit
     git::commit_changes(&message)?;
 
-    // 7) Final confirmation before we create/push the tag.
+    // 6) Final confirmation before we create/push the tag.
     // This is the irreversible step that triggers GitHub Actions release + crates.io publish.
     let tag = format!("v{}", new_version);
     let origin = remote_url("origin")?.unwrap_or_else(|| "<missing>".to_string());
@@ -794,7 +791,7 @@ async fn run_release_flow(generator: &Generator) -> Result<()> {
         .item(
             FinalConfirm::TriggerRelease,
             "Yes — create & push tag",
-            &format!(
+            format!(
                 "Will tag '{}' on branch '{}' and push to origin ({})",
                 tag, branch, origin
             ),

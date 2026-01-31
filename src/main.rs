@@ -4,7 +4,7 @@ mod git;
 mod setup;
 mod ui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use cliclack::{input, log, select};
 use config::{Config, Provider};
@@ -31,6 +31,8 @@ enum MainAction {
     Generate,
     Stage,
     View,
+    Push,
+    Release,
     Config,
     Exit,
 }
@@ -70,6 +72,24 @@ enum ViewAction {
     Back,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushAction {
+    PushBranch,
+    PushSpecificTag,
+    PushAllTags,
+    PushBranchAndTags,
+    Back,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReleaseBump {
+    Patch,
+    Minor,
+    Major,
+    Custom,
+    Back,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Ensure terminal colors are enabled on Windows
@@ -101,13 +121,23 @@ async fn main() -> Result<()> {
             )
             .item(
                 MainAction::Stage,
-                "Stage changes",
-                "Stage interactively (git add -p) or stage all",
+                "Stage / Unstage changes",
+                "Stage interactively (git add -p), stage all, unstage changes",
             )
             .item(
                 MainAction::View,
-                "View diff",
-                "Preview staged/unstaged diff before generating",
+                "View diff / summary",
+                "Preview staged/unstaged diff and stats before generating",
+            )
+            .item(
+                MainAction::Push,
+                "Push",
+                "Push current branch and/or tags (tags trigger CI release)",
+            )
+            .item(
+                MainAction::Release,
+                "Release (tag-based CI)",
+                "Bump version, run checks, commit, tag vX.Y.Z, and push tag to trigger CI publish",
             )
             .item(
                 MainAction::Config,
@@ -121,7 +151,6 @@ async fn main() -> Result<()> {
             MainAction::Generate => {
                 if let Err(e) = run_generate_flow(&generator, args.hint.clone()).await {
                     ui::print_error(&e.to_string());
-                    // Return to main menu
                 }
             }
             MainAction::Stage => {
@@ -131,6 +160,16 @@ async fn main() -> Result<()> {
             }
             MainAction::View => {
                 if let Err(e) = run_view_flow() {
+                    ui::print_error(&e.to_string());
+                }
+            }
+            MainAction::Push => {
+                if let Err(e) = run_push_flow() {
+                    ui::print_error(&e.to_string());
+                }
+            }
+            MainAction::Release => {
+                if let Err(e) = run_release_flow(&generator).await {
                     ui::print_error(&e.to_string());
                 }
             }
@@ -543,4 +582,487 @@ fn get_both_diff_or_offer_stage() -> Result<String> {
             Ok(String::new())
         }
     }
+}
+
+fn run_push_flow() -> Result<()> {
+    if !git::is_repo() {
+        ui::print_error("Not a git repository (or git is not installed).");
+        return Ok(());
+    }
+
+    loop {
+        let action = select("Push")
+            .item(
+                PushAction::PushBranch,
+                "Push current branch",
+                "Push commits to the remote (sets upstream if needed)",
+            )
+            .item(
+                PushAction::PushSpecificTag,
+                "Push a specific tag",
+                "Safer than pushing all tags (recommended for releases)",
+            )
+            .item(
+                PushAction::PushAllTags,
+                "Push all tags",
+                "Runs: git push --tags (may trigger releases if v* tags exist)",
+            )
+            .item(
+                PushAction::PushBranchAndTags,
+                "Push branch + all tags",
+                "Push commits and then push --tags",
+            )
+            .item(PushAction::Back, "Back", "Return to main menu")
+            .interact()?;
+
+        match action {
+            PushAction::PushBranch => {
+                push_current_branch_with_upstream()?;
+                ui::print_success("Branch pushed.");
+            }
+            PushAction::PushSpecificTag => {
+                let tag: String = input("Tag to push").placeholder("e.g. v0.1.3").interact()?;
+                push_tag(tag.trim())?;
+                ui::print_success("Tag pushed.");
+            }
+            PushAction::PushAllTags => {
+                push_tags()?;
+                ui::print_success("All tags pushed.");
+            }
+            PushAction::PushBranchAndTags => {
+                push_current_branch_with_upstream()?;
+                push_tags()?;
+                ui::print_success("Branch and tags pushed.");
+            }
+            PushAction::Back => return Ok(()),
+        }
+    }
+}
+
+async fn run_release_flow(generator: &Generator) -> Result<()> {
+    if !git::is_repo() {
+        ui::print_error("Not a git repository (or git is not installed).");
+        return Ok(());
+    }
+
+    // Guard: require clean working tree (release should be deterministic)
+    if !is_working_tree_clean()? {
+        ui::print_error(
+            "Working tree is not clean. Commit or stash your changes before releasing.",
+        );
+        return Ok(());
+    }
+
+    // Guard: require origin remote (we push tags to origin to trigger CI)
+    if remote_url("origin")?.is_none() {
+        ui::print_error("No 'origin' remote found. Add it first (git remote add origin <url>).");
+        return Ok(());
+    }
+
+    // Guard: ensure we're on the expected branch (your repo default is 'master')
+    let branch = current_branch()?;
+    if branch != "master" {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum BranchGuard {
+            Continue,
+            Back,
+        }
+
+        let choice = select(&format!(
+            "You are on branch '{}', not 'master'. Continue anyway?",
+            branch
+        ))
+        .item(
+            BranchGuard::Continue,
+            "Continue",
+            "Proceed with release on this branch",
+        )
+        .item(BranchGuard::Back, "Back", "Return to main menu")
+        .interact()?;
+
+        if choice == BranchGuard::Back {
+            return Ok(());
+        }
+    }
+
+    let bump = select("Release: how do you want to bump the version?")
+        .item(ReleaseBump::Patch, "Patch", "x.y.(z+1)")
+        .item(ReleaseBump::Minor, "Minor", "x.(y+1).0")
+        .item(ReleaseBump::Major, "Major", "(x+1).0.0")
+        .item(ReleaseBump::Custom, "Custom", "Enter a version manually")
+        .item(ReleaseBump::Back, "Back", "Return to main menu")
+        .interact()?;
+
+    let (old_version, new_version) = match bump {
+        ReleaseBump::Back => return Ok(()),
+        ReleaseBump::Custom => {
+            let current = read_cargo_version("Cargo.toml")?;
+            let input_version = input("Enter new version")
+                .default_input(&current)
+                .interact()?;
+            (current, input_version)
+        }
+        other => {
+            let current = read_cargo_version("Cargo.toml")?;
+            let next = bump_semver(&current, other)?;
+            (current, next)
+        }
+    };
+
+    if old_version == new_version {
+        ui::print_error("New version matches current version. Nothing to do.");
+        return Ok(());
+    }
+
+    // Confirm bump
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Confirm {
+        Proceed,
+        Cancel,
+    }
+    let confirm = select(&format!(
+        "Bump version {} -> {} ?",
+        old_version, new_version
+    ))
+    .item(
+        Confirm::Proceed,
+        "Proceed",
+        "Update files, run checks, commit, tag, push tag",
+    )
+    .item(Confirm::Cancel, "Cancel", "Return to main menu")
+    .interact()?;
+    if confirm == Confirm::Cancel {
+        return Ok(());
+    }
+
+    // 1) Update Cargo.toml
+    update_cargo_version_in_toml("Cargo.toml", &old_version, &new_version)?;
+
+    // 2) Update Cargo.lock (if present) to keep things consistent.
+    // We avoid `cargo update` during release automation because it can introduce unrelated dependency changes.
+    // Instead, we refresh the lockfile if needed.
+    let _ = run_cmd("cargo", &["generate-lockfile"]).ok();
+
+    // 3) Local checks (fast gate before we tag/push)
+    ui::print_info("Running local checks...");
+    run_cmd("cargo", &["fmt", "--check"]).context("cargo fmt --check failed")?;
+    run_cmd("cargo", &["clippy", "--", "-D", "warnings"]).context("cargo clippy failed")?;
+    run_cmd("cargo", &["test", "--locked"]).context("cargo test --locked failed")?;
+
+    // 4) Stage version bump files (Cargo.toml + Cargo.lock if changed)
+    git::stage_all()?;
+
+    // 5) Generate commit message for release bump (staged diff)
+    //    We keep it deterministic: staged-only diff + hint.
+    let hint = Some(format!("release: bump version to v{}", new_version));
+    let diff = git::get_diff(git::DiffSource::Staged)?;
+    let message: String =
+        ui::with_spinner("Generating release commit message...", "Generated", || {
+            generator.generate(&diff, hint.clone())
+        })
+        .await
+        .unwrap_or_else(|_| format!("chore(release): v{}", new_version));
+
+    // 6) Commit
+    git::commit_changes(&message)?;
+
+    // 7) Final confirmation before we create/push the tag.
+    // This is the irreversible step that triggers GitHub Actions release + crates.io publish.
+    let tag = format!("v{}", new_version);
+    let origin = remote_url("origin")?.unwrap_or_else(|| "<missing>".to_string());
+    let branch = current_branch()?;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FinalConfirm {
+        TriggerRelease,
+        Back,
+    }
+
+    let confirm = select("Final confirmation: trigger CI release & crates publish?")
+        .item(
+            FinalConfirm::TriggerRelease,
+            "Yes — create & push tag",
+            &format!(
+                "Will tag '{}' on branch '{}' and push to origin ({})",
+                tag, branch, origin
+            ),
+        )
+        .item(
+            FinalConfirm::Back,
+            "No — go back",
+            "Return to main menu without tagging",
+        )
+        .interact()?;
+
+    if confirm == FinalConfirm::Back {
+        return Ok(());
+    }
+
+    // Safety: avoid collisions (local or remote).
+    // Local tag collision:
+    if tag_exists_local(&tag)? {
+        anyhow::bail!("Tag already exists locally: {}", tag);
+    }
+    // Remote tag collision:
+    if tag_exists_remote("origin", &tag)? {
+        anyhow::bail!("Tag already exists on remote origin: {}", tag);
+    }
+
+    create_annotated_tag(&tag, &format!("Release {}", tag))?;
+    push_tag(&tag)?;
+
+    // Print a helpful URL to the CI runs page (no guessing run id).
+    if let Some(repo_https) = origin_https_repo_url()? {
+        ui::print_info(&format!(
+            "Track progress in GitHub Actions: {}/actions?query=workflow%3ARelease",
+            repo_https
+        ));
+        ui::print_info(&format!(
+            "Release page (once published): {}/releases/tag/{}",
+            repo_https, tag
+        ));
+    } else {
+        ui::print_info(
+            "Track progress in GitHub Actions: (could not derive repo URL from origin remote).",
+        );
+    }
+
+    ui::print_success(&format!(
+        "Release initiated: pushed tag {} (GitHub Actions will build + release + publish).",
+        tag
+    ));
+
+    Ok(())
+}
+
+fn run_cmd(cmd: &str, args: &[&str]) -> Result<()> {
+    let status = std::process::Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .with_context(|| format!("Failed to run {} {}", cmd, args.join(" ")))?;
+
+    if !status.success() {
+        anyhow::bail!("Command failed: {} {}", cmd, args.join(" "));
+    }
+    Ok(())
+}
+
+fn is_working_tree_clean() -> Result<bool> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .context("Failed to run git status")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(output.stdout.is_empty())
+}
+
+fn remote_url(remote: &str) -> Result<Option<String>> {
+    let o = std::process::Command::new("git")
+        .args(["remote", "get-url", remote])
+        .output()
+        .with_context(|| format!("Failed to get remote URL for '{}'", remote))?;
+
+    if o.status.success() {
+        Ok(Some(String::from_utf8_lossy(&o.stdout).trim().to_string()))
+    } else {
+        // If remote doesn't exist, git returns non-zero. Treat as None.
+        Ok(None)
+    }
+}
+
+fn origin_https_repo_url() -> Result<Option<String>> {
+    let url = match remote_url("origin")? {
+        Some(u) => u,
+        None => return Ok(None),
+    };
+
+    // Handle common forms:
+    // - https://github.com/OWNER/REPO.git
+    // - https://github.com/OWNER/REPO
+    // - git@github.com:OWNER/REPO.git
+    // We normalize to: https://github.com/OWNER/REPO
+    if let Some(rest) = url.strip_prefix("https://github.com/") {
+        let rest = rest.trim_end_matches(".git");
+        return Ok(Some(format!("https://github.com/{}", rest)));
+    }
+
+    if let Some(rest) = url.strip_prefix("git@github.com:") {
+        let rest = rest.trim_end_matches(".git");
+        return Ok(Some(format!("https://github.com/{}", rest)));
+    }
+
+    Ok(None)
+}
+
+fn read_cargo_version(path: &str) -> Result<String> {
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path))?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("version") && trimmed.contains('=') && trimmed.contains('"') {
+            // naive but reliable enough for standard Cargo.toml
+            // version = "x.y.z"
+            if let Some(start) = trimmed.find('"') {
+                if let Some(end) = trimmed[start + 1..].find('"') {
+                    return Ok(trimmed[start + 1..start + 1 + end].to_string());
+                }
+            }
+        }
+    }
+    anyhow::bail!("Failed to locate package version in {}", path)
+}
+
+fn update_cargo_version_in_toml(path: &str, old: &str, new: &str) -> Result<()> {
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path))?;
+    let mut out = String::new();
+    let mut replaced = false;
+
+    for line in content.lines() {
+        if !replaced
+            && line.trim_start().starts_with("version")
+            && line.contains(&format!("\"{}\"", old))
+        {
+            out.push_str(&line.replace(&format!("\"{}\"", old), &format!("\"{}\"", new)));
+            out.push('\n');
+            replaced = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    if !replaced {
+        anyhow::bail!(
+            "Failed to update version in {} (did not find version = \"{}\")",
+            path,
+            old
+        );
+    }
+
+    std::fs::write(path, out).with_context(|| format!("Failed to write {}", path))?;
+    Ok(())
+}
+
+fn bump_semver(current: &str, bump: ReleaseBump) -> Result<String> {
+    let parts: Vec<&str> = current.split('.').collect();
+    if parts.len() != 3 {
+        anyhow::bail!(
+            "Current version is not semver (expected x.y.z): {}",
+            current
+        );
+    }
+    let mut major: u64 = parts[0].parse().context("Invalid major version")?;
+    let mut minor: u64 = parts[1].parse().context("Invalid minor version")?;
+    let mut patch: u64 = parts[2].parse().context("Invalid patch version")?;
+
+    match bump {
+        ReleaseBump::Patch => patch += 1,
+        ReleaseBump::Minor => {
+            minor += 1;
+            patch = 0;
+        }
+        ReleaseBump::Major => {
+            major += 1;
+            minor = 0;
+            patch = 0;
+        }
+        ReleaseBump::Custom | ReleaseBump::Back => {
+            anyhow::bail!("Invalid bump kind for bump_semver")
+        }
+    }
+
+    Ok(format!("{}.{}.{}", major, minor, patch))
+}
+
+fn current_branch() -> Result<String> {
+    let o = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .context("Failed to get current branch")?;
+    if !o.status.success() {
+        anyhow::bail!(
+            "git rev-parse failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+fn has_upstream() -> Result<bool> {
+    let o = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .output()
+        .context("Failed to check upstream")?;
+    Ok(o.status.success())
+}
+
+fn push_current_branch_with_upstream() -> Result<()> {
+    let branch = current_branch()?;
+    if has_upstream()? {
+        run_cmd("git", &["push"])?;
+        return Ok(());
+    }
+
+    // No upstream; set it explicitly
+    run_cmd("git", &["push", "-u", "origin", &branch])?;
+    Ok(())
+}
+
+fn push_tags() -> Result<()> {
+    run_cmd("git", &["push", "--tags"])
+}
+
+fn push_tag(tag: &str) -> Result<()> {
+    let t = tag.trim();
+    if t.is_empty() {
+        anyhow::bail!("Tag name cannot be empty.");
+    }
+    run_cmd("git", &["push", "origin", t])
+}
+
+fn tag_exists_local(tag: &str) -> Result<bool> {
+    let o = std::process::Command::new("git")
+        .args(["tag", "--list", tag])
+        .output()
+        .context("Failed to check local tags")?;
+
+    if !o.status.success() {
+        anyhow::bail!(
+            "git tag --list failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+
+    Ok(!String::from_utf8_lossy(&o.stdout).trim().is_empty())
+}
+
+fn tag_exists_remote(remote: &str, tag: &str) -> Result<bool> {
+    // `git ls-remote --tags origin refs/tags/vX.Y.Z`
+    let refs = format!("refs/tags/{}", tag);
+    let o = std::process::Command::new("git")
+        .args(["ls-remote", "--tags", remote, &refs])
+        .output()
+        .with_context(|| format!("Failed to check remote tags on {}", remote))?;
+
+    if !o.status.success() {
+        anyhow::bail!(
+            "git ls-remote failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+
+    Ok(!String::from_utf8_lossy(&o.stdout).trim().is_empty())
+}
+
+fn create_annotated_tag(tag: &str, message: &str) -> Result<()> {
+    run_cmd("git", &["tag", "-a", tag, "-m", message])
 }

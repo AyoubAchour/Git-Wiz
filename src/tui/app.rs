@@ -10,6 +10,7 @@ use crate::git;
 use crate::release;
 use crate::setup;
 use crate::tui::runtime;
+use crate::tui::tasks::{TaskEvent, TaskKind, TaskResult, TaskRunner};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalKind {
@@ -377,7 +378,7 @@ impl App {
         actions.get(self.action_index).copied()
     }
 
-    pub fn activate_selected_action(&mut self) -> bool {
+    pub fn activate_selected_action(&mut self, tasks: &TaskRunner) -> bool {
         let Some(action) = self.selected_action() else {
             return false;
         };
@@ -385,17 +386,11 @@ impl App {
         match action {
             // Generate tab
             ActionItem::GenerateFromStaged => {
-                if let Err(e) = self.generate_commit_message_staged_blocking() {
-                    self.set_status(StatusLevel::Error, e.to_string());
-                    self.log(format!("Generate failed: {e}"));
-                }
+                let _started = self.start_generate_from_staged(tasks);
                 true
             }
             ActionItem::Commit => {
-                if let Err(e) = self.commit_from_textarea() {
-                    self.set_status(StatusLevel::Error, e.to_string());
-                    self.log(format!("Commit failed: {e}"));
-                }
+                let _started = self.start_commit_from_editor(tasks);
                 true
             }
             ActionItem::ClearMessage => {
@@ -415,13 +410,7 @@ impl App {
                 true
             }
             ActionItem::StageAll => {
-                if let Err(e) = self.stage_all() {
-                    self.set_status(StatusLevel::Error, e.to_string());
-                    self.log(format!("Stage all failed: {e}"));
-                } else {
-                    self.set_status(StatusLevel::Success, "Staged all changes.");
-                    self.log("Staged all changes.");
-                }
+                let _started = self.start_stage_all(tasks);
                 true
             }
             ActionItem::UnstagePatch => {
@@ -447,45 +436,21 @@ impl App {
 
             // Diff tab (wired)
             ActionItem::ViewStaged => {
-                if let Err(e) = self.load_diff_view(DiffViewSource::Staged) {
-                    self.set_status(StatusLevel::Error, e.to_string());
-                    self.log(format!("Load diff failed: {e}"));
-                } else {
-                    self.set_status(StatusLevel::Success, "Loaded staged diff.");
-                    self.log("Loaded staged diff.");
-                }
+                let _started = self.start_load_diff(tasks, DiffViewSource::Staged);
                 true
             }
             ActionItem::ViewUnstaged => {
-                if let Err(e) = self.load_diff_view(DiffViewSource::Unstaged) {
-                    self.set_status(StatusLevel::Error, e.to_string());
-                    self.log(format!("Load diff failed: {e}"));
-                } else {
-                    self.set_status(StatusLevel::Success, "Loaded unstaged diff.");
-                    self.log("Loaded unstaged diff.");
-                }
+                let _started = self.start_load_diff(tasks, DiffViewSource::Unstaged);
                 true
             }
             ActionItem::ViewBoth => {
-                if let Err(e) = self.load_diff_view(DiffViewSource::Both) {
-                    self.set_status(StatusLevel::Error, e.to_string());
-                    self.log(format!("Load diff failed: {e}"));
-                } else {
-                    self.set_status(StatusLevel::Success, "Loaded combined diff.");
-                    self.log("Loaded combined diff.");
-                }
+                let _started = self.start_load_diff(tasks, DiffViewSource::Both);
                 true
             }
 
             // Push tab (wired)
             ActionItem::PushBranch => {
-                if let Err(e) = self.push_current_branch_with_upstream() {
-                    self.set_status(StatusLevel::Error, e.to_string());
-                    self.log(format!("Push branch failed: {e}"));
-                } else {
-                    self.set_status(StatusLevel::Success, "Branch pushed.");
-                    self.log("Branch pushed.");
-                }
+                let _started = self.start_push_branch(tasks);
                 true
             }
             ActionItem::PushSpecificTag => {
@@ -622,7 +587,7 @@ impl App {
         self.log("Cleared commit message.");
     }
 
-    pub fn handle_global_key(&mut self, key: &KeyEvent) -> bool {
+    pub fn handle_global_key(&mut self, tasks: &TaskRunner, key: &KeyEvent) -> bool {
         // If an app modal is open, it captures keys (except Ctrl+C).
         if self.modal.kind != ModalKind::None {
             match (key.code, key.modifiers) {
@@ -641,7 +606,7 @@ impl App {
                     let purpose = self.modal.confirm_purpose;
                     self.modal = ModalState::none();
                     if let Some(p) = purpose {
-                        self.handle_confirm(p);
+                        self.handle_confirm(tasks, p);
                     }
                     return true;
                 }
@@ -657,7 +622,7 @@ impl App {
                     let value = self.modal.input_value.trim().to_string();
                     self.modal = ModalState::none();
                     if let Some(p) = purpose {
-                        self.handle_text_input(p, value);
+                        self.handle_text_input(tasks, p, value);
                     }
                     return true;
                 }
@@ -725,25 +690,6 @@ impl App {
             _ => {}
         }
 
-        // When focus is on the left pane, Up/Down navigates the action list.
-        // Enter activates the selected action for ALL tabs (not just Generate).
-        if self.focus == Focus::LeftPane {
-            match (key.code, key.modifiers) {
-                (KeyCode::Up, KeyModifiers::NONE) => {
-                    self.action_up();
-                    return true;
-                }
-                (KeyCode::Down, KeyModifiers::NONE) => {
-                    self.action_down();
-                    return true;
-                }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    return self.activate_selected_action();
-                }
-                _ => {}
-            }
-        }
-
         // Tabs:
         // - Alt+Left/Right always switches tabs.
         // - Left/Right switches tabs when not editing.
@@ -768,21 +714,15 @@ impl App {
         }
     }
 
-    pub fn handle_generate_key(&mut self, key: &KeyEvent) -> bool {
+    pub fn handle_generate_key(&mut self, tasks: &TaskRunner, key: &KeyEvent) -> bool {
         // Actions that should work regardless of focus.
         match (key.code, key.modifiers) {
             (KeyCode::Char('g'), KeyModifiers::NONE) => {
-                if let Err(e) = self.generate_commit_message_staged_blocking() {
-                    self.set_status(StatusLevel::Error, e.to_string());
-                    self.log(format!("Generate failed: {e}"));
-                }
+                let _started = self.start_generate_from_staged(tasks);
                 return true;
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {
-                if let Err(e) = self.commit_from_textarea() {
-                    self.set_status(StatusLevel::Error, e.to_string());
-                    self.log(format!("Commit failed: {e}"));
-                }
+                let _started = self.start_commit_from_editor(tasks);
                 return true;
             }
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
@@ -803,6 +743,7 @@ impl App {
         false
     }
 
+    #[allow(dead_code)]
     pub fn commit_from_textarea(&mut self) -> Result<()> {
         if !git::is_repo() {
             anyhow::bail!("Not a git repository (or git is not installed).");
@@ -883,7 +824,7 @@ impl App {
         Ok(())
     }
 
-    fn handle_confirm(&mut self, purpose: ConfirmPurpose) {
+    fn handle_confirm(&mut self, tasks: &TaskRunner, purpose: ConfirmPurpose) {
         match purpose {
             ConfirmPurpose::ClearConfig => {
                 if let Err(e) = self.clear_config_file() {
@@ -895,13 +836,7 @@ impl App {
                 }
             }
             ConfirmPurpose::PushAllTags => {
-                if let Err(e) = self.push_all_tags() {
-                    self.set_status(StatusLevel::Error, e.to_string());
-                    self.log(format!("Push all tags failed: {e}"));
-                } else {
-                    self.set_status(StatusLevel::Success, "All tags pushed.");
-                    self.log("All tags pushed.");
-                }
+                let _started = self.start_push_all_tags(tasks);
             }
             ConfirmPurpose::ReleaseTrigger => {
                 if let Some(v) = self.pending_release_version.clone() {
@@ -943,7 +878,7 @@ impl App {
         }
     }
 
-    fn handle_text_input(&mut self, purpose: TextInputPurpose, value: String) {
+    fn handle_text_input(&mut self, tasks: &TaskRunner, purpose: TextInputPurpose, value: String) {
         match purpose {
             TextInputPurpose::PushSpecificTag => {
                 let v = value.trim();
@@ -953,13 +888,7 @@ impl App {
                     return;
                 }
 
-                if let Err(e) = self.push_tag(v) {
-                    self.set_status(StatusLevel::Error, e.to_string());
-                    self.log(format!("Push tag failed: {e}"));
-                } else {
-                    self.set_status(StatusLevel::Success, format!("Tag pushed: {}", v));
-                    self.log(format!("Tag pushed: {}", v));
-                }
+                let _started = self.start_push_tag(tasks, v.to_string());
             }
             TextInputPurpose::ReleaseCustomVersion => {
                 let v = value.trim();
@@ -984,6 +913,300 @@ impl App {
         }
     }
 
+    fn start_generate_from_staged(&mut self, tasks: &TaskRunner) -> bool {
+        if tasks.is_busy() {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Ignored: tried to start Generate while another task is running.");
+            return false;
+        }
+        if !git::is_repo() {
+            self.set_status(StatusLevel::Error, "Not a git repository (or git is not installed).");
+            self.log("Generate failed: not a git repository.");
+            return true;
+        }
+
+        let mock_mode = self.mock_mode;
+
+        let started = tasks.start(
+            TaskKind::GenerateCommitFromStaged,
+            "Generating commit message (staged)…",
+            move |tx| {
+                let _ = tx.send(TaskEvent::Progress {
+                    message: "Collecting staged diff…".to_string(),
+                });
+
+                let summary = git::diff_summary(git::DiffSource::Staged)?;
+                let summary_text = format!(
+                    "{} files, +{} -{}, ~{} bytes",
+                    summary.files_changed, summary.insertions, summary.deletions, summary.bytes
+                );
+
+                let diff = git::get_diff(git::DiffSource::Staged)?;
+                let (generator, provider, model) = build_generator_for_task(mock_mode)?;
+
+                let _ = tx.send(TaskEvent::Progress {
+                    message: format!("Generating with {}…", provider),
+                });
+
+                let msg = runtime::tui_block_on(generator.generate(&diff, None))?;
+
+                Ok(TaskResult::GeneratedCommitMessage {
+                    message: msg,
+                    summary: summary_text,
+                    provider,
+                    model,
+                })
+            },
+        );
+
+        if !started {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Generate ignored: task runner was busy.");
+        }
+        started
+    }
+
+    fn start_commit_from_editor(&mut self, tasks: &TaskRunner) -> bool {
+        if tasks.is_busy() {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Ignored: tried to start Commit while another task is running.");
+            return false;
+        }
+        if !git::is_repo() {
+            self.set_status(StatusLevel::Error, "Not a git repository (or git is not installed).");
+            self.log("Commit failed: not a git repository.");
+            return true;
+        }
+
+        let msg = self.commit_editor.lines().join("\n").trim().to_string();
+        if msg.is_empty() {
+            self.set_status(StatusLevel::Error, "Commit message is empty.");
+            self.log("Commit failed: empty message.");
+            return true;
+        }
+
+        let started = tasks.start(TaskKind::CommitFromEditor, "Committing…", move |_tx| {
+            git::commit_changes(&msg)?;
+            Ok(TaskResult::OkMessage {
+                status: "Committed successfully.".to_string(),
+                log: Some("Committed changes.".to_string()),
+            })
+        });
+
+        if !started {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Commit ignored: task runner was busy.");
+        }
+        started
+    }
+
+    fn start_stage_all(&mut self, tasks: &TaskRunner) -> bool {
+        if tasks.is_busy() {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Ignored: tried to start Stage All while another task is running.");
+            return false;
+        }
+        if !git::is_repo() {
+            self.set_status(StatusLevel::Error, "Not a git repository (or git is not installed).");
+            self.log("Stage all failed: not a git repository.");
+            return true;
+        }
+
+        let started = tasks.start(TaskKind::StageAll, "Staging all changes…", move |_tx| {
+            git::stage_all()?;
+            Ok(TaskResult::OkMessage {
+                status: "Staged all changes.".to_string(),
+                log: Some("Staged all changes.".to_string()),
+            })
+        });
+
+        if !started {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Stage all ignored: task runner was busy.");
+        }
+        started
+    }
+
+    fn start_load_diff(&mut self, tasks: &TaskRunner, source: DiffViewSource) -> bool {
+        if tasks.is_busy() {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Ignored: tried to start Load Diff while another task is running.");
+            return false;
+        }
+        if !git::is_repo() {
+            self.set_status(StatusLevel::Error, "Not a git repository (or git is not installed).");
+            self.log("Load diff failed: not a git repository.");
+            return true;
+        }
+
+        let label = format!("Loading {} diff…", source.label());
+        let status = format!("Loaded {} diff.", source.label().to_lowercase());
+
+        let started = tasks.start(TaskKind::LoadDiff, label, move |_tx| {
+            let text = git::get_diff_allow_empty(source.to_git_source())?;
+            Ok(TaskResult::LoadedDiff {
+                source,
+                text,
+                status,
+            })
+        });
+
+        if !started {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Load diff ignored: task runner was busy.");
+        }
+        started
+    }
+
+    fn start_push_branch(&mut self, tasks: &TaskRunner) -> bool {
+        use std::process::Command;
+
+        if tasks.is_busy() {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Ignored: tried to start Push Branch while another task is running.");
+            return false;
+        }
+        if !git::is_repo() {
+            self.set_status(StatusLevel::Error, "Not a git repository (or git is not installed).");
+            self.log("Push branch failed: not a git repository.");
+            return true;
+        }
+
+        let started = tasks.start(TaskKind::PushBranch, "Pushing branch…", move |_tx| {
+            // If upstream exists, `git push` is enough. Otherwise set upstream.
+            let has_upstream = Command::new("git")
+                .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+
+            if has_upstream {
+                let o = Command::new("git").args(["push"]).output()?;
+                if !o.status.success() {
+                    anyhow::bail!("git push failed: {}", String::from_utf8_lossy(&o.stderr));
+                }
+                return Ok(TaskResult::OkMessage {
+                    status: "Branch pushed.".to_string(),
+                    log: Some("Branch pushed.".to_string()),
+                });
+            }
+
+            let o = Command::new("git")
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .output()?;
+            if !o.status.success() {
+                anyhow::bail!(
+                    "git rev-parse --abbrev-ref HEAD failed: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+            let branch = String::from_utf8_lossy(&o.stdout).trim().to_string();
+
+            let o = Command::new("git")
+                .args(["push", "-u", "origin", &branch])
+                .output()?;
+            if !o.status.success() {
+                anyhow::bail!(
+                    "git push -u origin {} failed: {}",
+                    branch,
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+
+            Ok(TaskResult::OkMessage {
+                status: "Branch pushed.".to_string(),
+                log: Some("Branch pushed.".to_string()),
+            })
+        });
+
+        if !started {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Push branch ignored: task runner was busy.");
+        }
+        started
+    }
+
+    fn start_push_tag(&mut self, tasks: &TaskRunner, tag: String) -> bool {
+        use std::process::Command;
+
+        if tasks.is_busy() {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Ignored: tried to start Push Tag while another task is running.");
+            return false;
+        }
+        if !git::is_repo() {
+            self.set_status(StatusLevel::Error, "Not a git repository (or git is not installed).");
+            self.log("Push tag failed: not a git repository.");
+            return true;
+        }
+
+        let t = tag.trim().to_string();
+        if t.is_empty() {
+            self.set_status(StatusLevel::Error, "Tag cannot be empty.");
+            self.log("Push tag failed: empty tag.");
+            return true;
+        }
+
+        let label = format!("Pushing tag {}…", t);
+
+        let started = tasks.start(TaskKind::PushTag, label, move |_tx| {
+            let o = Command::new("git").args(["push", "origin", &t]).output()?;
+            if !o.status.success() {
+                anyhow::bail!(
+                    "git push origin {} failed: {}",
+                    t,
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+            Ok(TaskResult::OkMessage {
+                status: format!("Tag pushed: {}", t),
+                log: Some(format!("Tag pushed: {}", t)),
+            })
+        });
+
+        if !started {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Push tag ignored: task runner was busy.");
+        }
+        started
+    }
+
+    fn start_push_all_tags(&mut self, tasks: &TaskRunner) -> bool {
+        use std::process::Command;
+
+        if tasks.is_busy() {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Ignored: tried to start Push All Tags while another task is running.");
+            return false;
+        }
+        if !git::is_repo() {
+            self.set_status(StatusLevel::Error, "Not a git repository (or git is not installed).");
+            self.log("Push all tags failed: not a git repository.");
+            return true;
+        }
+
+        let started = tasks.start(TaskKind::PushAllTags, "Pushing all tags…", move |_tx| {
+            let o = Command::new("git").args(["push", "--tags"]).output()?;
+            if !o.status.success() {
+                anyhow::bail!(
+                    "git push --tags failed: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+            Ok(TaskResult::OkMessage {
+                status: "All tags pushed.".to_string(),
+                log: Some("All tags pushed.".to_string()),
+            })
+        });
+
+        if !started {
+            self.set_status(StatusLevel::Info, "Busy: another task is running.");
+            self.log("Push all tags ignored: task runner was busy.");
+        }
+        started
+    }
+
+    #[allow(dead_code)]
     fn generate_commit_message_staged_blocking(&mut self) -> Result<()> {
         if !git::is_repo() {
             anyhow::bail!("Not a git repository (or git is not installed).");
@@ -1020,6 +1243,7 @@ impl App {
         git::stage_patch()
     }
 
+    #[allow(dead_code)]
     fn stage_all(&mut self) -> Result<()> {
         if !git::is_repo() {
             anyhow::bail!("Not a git repository (or git is not installed).");
@@ -1042,6 +1266,7 @@ impl App {
         git::unstage_all()
     }
 
+    #[allow(dead_code)]
     fn load_diff_view(&mut self, source: DiffViewSource) -> Result<()> {
         if !git::is_repo() {
             anyhow::bail!("Not a git repository (or git is not installed).");
@@ -1056,6 +1281,7 @@ impl App {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn push_current_branch_with_upstream(&mut self) -> Result<()> {
         if !git::is_repo() {
             anyhow::bail!("Not a git repository (or git is not installed).");
@@ -1091,6 +1317,7 @@ impl App {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn push_tag(&mut self, tag: &str) -> Result<()> {
         if !git::is_repo() {
             anyhow::bail!("Not a git repository (or git is not installed).");
@@ -1113,6 +1340,7 @@ impl App {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn push_all_tags(&mut self) -> Result<()> {
         if !git::is_repo() {
             anyhow::bail!("Not a git repository (or git is not installed).");
@@ -1130,6 +1358,7 @@ impl App {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn current_branch(&self) -> Result<String> {
         let o = std::process::Command::new("git")
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -1261,6 +1490,35 @@ impl App {
                 .title(" Commit Message ")
                 .borders(ratatui::widgets::Borders::ALL),
         );
+    }
+
+    // NOTE: helper for background tasks (cannot borrow &mut self from worker thread)
+    // Returns (Generator, provider_label, model_label)
+}
+
+fn build_generator_for_task(mock_mode: bool) -> Result<(Generator, String, String)> {
+    if mock_mode {
+        return Ok((
+            Generator::Mock(MockGenerator::new()),
+            "Mock".to_string(),
+            "-".to_string(),
+        ));
+    }
+
+    match Config::load()? {
+        Some(cfg) => {
+            let provider_label = cfg.provider.to_string();
+            let model_label = cfg.model.clone();
+            let gen = match cfg.provider {
+                Provider::OpenAI => Generator::OpenAI(OpenAIGenerator::new(cfg.api_key, cfg.model)),
+                Provider::Anthropic => {
+                    Generator::Anthropic(AnthropicGenerator::new(cfg.api_key, cfg.model))
+                }
+                Provider::Gemini => Generator::Gemini(GeminiGenerator::new(cfg.api_key, cfg.model)),
+            };
+            Ok((gen, provider_label, model_label))
+        }
+        None => anyhow::bail!("No config found. Use the Config tab or run setup."),
     }
 }
 

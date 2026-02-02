@@ -45,7 +45,6 @@ struct TaskState {
 /// Minimal info for the UI to render progress.
 #[derive(Debug, Clone)]
 pub struct RunningTask {
-    pub kind: TaskKind,
     pub label: String,
     pub started_at: Instant,
     pub spinner_index: usize,
@@ -156,9 +155,11 @@ impl TaskRunner {
                 label,
                 started_at,
             } => {
+                // The kind is currently not rendered in the UI, but we still
+                // destructure it to keep the field "alive" for future diagnostics.
+                let _ = kind;
                 if let Ok(mut s) = self.state.lock() {
                     s.current = Some(RunningTask {
-                        kind,
                         label: label.clone(),
                         started_at,
                         spinner_index: 0,
@@ -236,7 +237,6 @@ impl TaskRunner {
             let started_at = Instant::now();
             let label = label.into();
             s.current = Some(RunningTask {
-                kind,
                 label: label.clone(),
                 started_at,
                 spinner_index: 0,

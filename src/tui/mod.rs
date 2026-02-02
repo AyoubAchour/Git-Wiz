@@ -72,7 +72,7 @@ pub fn run_tui() -> Result<()> {
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout).context("Failed to poll events")? {
             if let Event::Key(key) = event::read().context("Failed to read event")? {
-                input::dispatch_key(&mut app, key);
+                input::dispatch_key(&mut app, &tasks, key);
             }
         }
 

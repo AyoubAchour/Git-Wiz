@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::app::{ActionItem, App, Focus, Tab};
 use super::runtime;
+use super::tasks::TaskRunner;
 
 /// Dispatch a key event into the TUI application.
 ///
@@ -14,14 +15,14 @@ use super::runtime;
 /// 6) Tab-specific handlers (only for text editing shortcuts, etc.)
 ///
 /// Returns `true` if the key was handled (consumed).
-pub fn dispatch_key(app: &mut App, key: KeyEvent) -> bool {
+pub fn dispatch_key(app: &mut App, tasks: &TaskRunner, key: KeyEvent) -> bool {
     // Only process key presses; ignore repeats/releases to avoid accidental double actions.
     if key.kind != KeyEventKind::Press {
         return false;
     }
 
     // 1) Help modal / overlays get first priority and may capture all input.
-    if app.handle_global_key(&key) {
+    if app.handle_global_key(tasks, &key) {
         return true;
     }
 
@@ -75,12 +76,12 @@ pub fn dispatch_key(app: &mut App, key: KeyEvent) -> bool {
                             // run outside raw mode / alt screen. This avoids the "TUI crashes and clippy output floods"
                             // symptom by letting the terminal behave normally.
                             let _ = runtime::with_tui_suspended(|| {
-                                let _handled = app.activate_selected_action();
+                                let _handled = app.activate_selected_action(tasks);
                                 Ok(())
                             });
                             true
                         }
-                        _ => app.activate_selected_action(),
+                        _ => app.activate_selected_action(tasks),
                     };
                 }
 
@@ -133,7 +134,7 @@ pub fn dispatch_key(app: &mut App, key: KeyEvent) -> bool {
     // 6) Tab-specific input
     match app.active_tab {
         // Generate is special: it supports editor typing and shortcuts even when not focused on Actions.
-        Tab::Generate => app.handle_generate_key(&key),
+        Tab::Generate => app.handle_generate_key(tasks, &key),
 
         // Diff/Stage/Push/Release/Config: all interactions should come from Actions list (LeftPane)
         // and/or modals, so we don't consume keys here.

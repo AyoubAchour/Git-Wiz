@@ -208,6 +208,12 @@ pub struct StatusLine {
     pub message: String,
 }
 
+pub struct RunningTaskSnapshot {
+    pub label: String,
+    pub started_at: std::time::Instant,
+    pub spinner_index: usize,
+}
+
 pub struct App {
     pub active_tab: Tab,
     pub focus: Focus,
@@ -220,6 +226,9 @@ pub struct App {
 
     // Selectable action menu (left-side actions)
     pub action_index: usize,
+
+    // Background task progress snapshot (set by TUI runtime each tick)
+    pub running_task: Option<RunningTaskSnapshot>,
 
     // Generate tab state
     pub diff_source_label: String,
@@ -262,6 +271,8 @@ impl App {
             modal: ModalState::none(),
 
             action_index: 0,
+
+            running_task: None,
 
             diff_source_label: "Staged (recommended)".to_string(),
             diff_summary: "No diff loaded".to_string(),

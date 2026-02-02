@@ -8,6 +8,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, Focus, ModalKind, StatusLevel, Tab};
+use super::tasks::{format_elapsed, spinner_frames};
 
 pub fn draw(f: &mut Frame<'_>, app: &mut App) {
     let area = f.size();
@@ -655,25 +656,54 @@ fn draw_footer(f: &mut Frame<'_>, app: &App, area: Rect) {
         .map(|s| s.message.as_str())
         .unwrap_or("");
 
-    let footer = Paragraph::new(Line::from(vec![
+    // Render a lightweight progress indicator when a background task is running.
+    //
+    // Note: the `tasks` module exposes helper functions for spinner frames and elapsed formatting.
+    // The actual running task state is stored on the App (set by the TUI runtime).
+    let progress_spans = if let Some(task) = app.running_task.as_ref() {
+        let frames = spinner_frames();
+        let spinner = frames[task.spinner_index % frames.len()];
+        let elapsed = format_elapsed(task.started_at.elapsed());
+        vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{} {}", spinner, task.label),
+                Style::default().fg(Color::White),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("({})", elapsed),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]
+    } else {
+        vec![]
+    };
+
+    let mut spans = vec![
         Span::styled(
             format!(" {} ", label),
             Style::default().fg(Color::Black).bg(color),
         ),
         Span::raw(" "),
         Span::styled(msg, Style::default().fg(Color::White)),
+    ];
+    spans.extend(progress_spans);
+    spans.extend(vec![
         Span::raw("    "),
         Span::styled(
             "←/→:Tabs  Alt+←/→:Tabs  Enter:Run/Commit  Tab:Focus  ?:Help  Esc:Quit",
             Style::default().fg(Color::DarkGray),
         ),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    )
-    .wrap(Wrap { trim: true });
+    ]);
+
+    let footer = Paragraph::new(Line::from(spans))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
+        .wrap(Wrap { trim: true });
 
     f.render_widget(footer, area);
 }

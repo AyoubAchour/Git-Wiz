@@ -400,6 +400,8 @@ impl App {
 
             // Stage tab (interactive patch ops are suspended by the input layer)
             ActionItem::StagePatch => {
+                self.set_status(StatusLevel::Info, "Switching to terminal for interactive staging…");
+                self.log("Switching to terminal: git add -p (interactive)");
                 if let Err(e) = self.stage_patch() {
                     self.set_status(StatusLevel::Error, e.to_string());
                     self.log(format!("Stage patch failed: {e}"));
@@ -414,6 +416,11 @@ impl App {
                 true
             }
             ActionItem::UnstagePatch => {
+                self.set_status(
+                    StatusLevel::Info,
+                    "Switching to terminal for interactive unstaging…",
+                );
+                self.log("Switching to terminal: unstage interactively");
                 if let Err(e) = self.unstage_patch() {
                     self.set_status(StatusLevel::Error, e.to_string());
                     self.log(format!("Unstage patch failed: {e}"));

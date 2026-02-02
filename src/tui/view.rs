@@ -152,26 +152,7 @@ fn draw_generate_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
     render_actions_list(f, app, left[1]);
 
     // Log panel
-    let log_block = Block::default()
-        .title(" Log ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
-
-    let log_lines: Vec<Line> = app
-        .logs
-        .iter()
-        .rev()
-        .take(12)
-        .rev()
-        .map(|s| Line::from(Span::raw(s.clone())))
-        .collect();
-
-    f.render_widget(
-        Paragraph::new(log_lines)
-            .block(log_block)
-            .wrap(Wrap { trim: true }),
-        left[2],
-    );
+    render_log_panel(f, app, left[2]);
 
     // Editor
     let editor_border = if app.focus == Focus::CommitEditor {
@@ -198,7 +179,7 @@ fn draw_stage_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
 
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(8), Constraint::Min(1)])
+        .constraints([Constraint::Length(8), Constraint::Length(7), Constraint::Min(1)])
         .split(cols[0]);
 
     let info_block = Block::default()
@@ -230,6 +211,7 @@ fn draw_stage_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
     );
 
     render_actions_list(f, app, left[1]);
+    render_log_panel(f, app, left[2]);
 
     let details_block = Block::default()
         .title(" Details ")
@@ -269,7 +251,7 @@ fn draw_diff_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
 
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(1)])
+        .constraints([Constraint::Length(7), Constraint::Length(7), Constraint::Min(1)])
         .split(cols[0]);
 
     // Context panel for Diff tab
@@ -313,6 +295,7 @@ fn draw_diff_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
 
     // Actions list on Diff tab (selectable)
     render_actions_list(f, app, left[1]);
+    render_log_panel(f, app, left[2]);
 
     // Right: scrollable diff viewer
     let viewer_block = Block::default()
@@ -357,7 +340,7 @@ fn draw_push_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
 
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(8), Constraint::Min(1)])
+        .constraints([Constraint::Length(8), Constraint::Length(7), Constraint::Min(1)])
         .split(cols[0]);
 
     let info_block = Block::default()
@@ -389,6 +372,7 @@ fn draw_push_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
     );
 
     render_actions_list(f, app, left[1]);
+    render_log_panel(f, app, left[2]);
 
     let details_block = Block::default()
         .title(" Notes ")
@@ -432,7 +416,7 @@ fn draw_release_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
 
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(10), Constraint::Min(1)])
+        .constraints([Constraint::Length(10), Constraint::Length(7), Constraint::Min(1)])
         .split(cols[0]);
 
     let info_block = Block::default()
@@ -471,6 +455,7 @@ fn draw_release_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
     );
 
     render_actions_list(f, app, left[1]);
+    render_log_panel(f, app, left[2]);
 
     let details_block = Block::default()
         .title(" Flow ")
@@ -509,7 +494,7 @@ fn draw_config_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
 
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(9), Constraint::Min(1)])
+        .constraints([Constraint::Length(9), Constraint::Length(7), Constraint::Min(1)])
         .split(cols[0]);
 
     let info_block = Block::default()
@@ -545,6 +530,7 @@ fn draw_config_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
     );
 
     render_actions_list(f, app, left[1]);
+    render_log_panel(f, app, left[2]);
 
     let details_block = Block::default()
         .title(" Notes ")
@@ -640,6 +626,29 @@ fn render_actions_list(f: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
+fn render_log_panel(f: &mut Frame<'_>, app: &App, area: Rect) {
+    let log_block = Block::default()
+        .title(" Log ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    let log_lines: Vec<Line> = app
+        .logs
+        .iter()
+        .rev()
+        .take(12)
+        .rev()
+        .map(|s| Line::from(Span::raw(s.clone())))
+        .collect();
+
+    f.render_widget(
+        Paragraph::new(log_lines)
+            .block(log_block)
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
 fn draw_footer(f: &mut Frame<'_>, app: &App, area: Rect) {
     let (label, color) = match &app.status {
         Some(s) => match s.level {
@@ -680,7 +689,7 @@ fn draw_footer(f: &mut Frame<'_>, app: &App, area: Rect) {
         vec![]
     };
 
-    let mut spans = vec![
+    let mut line1_spans = vec![
         Span::styled(
             format!(" {} ", label),
             Style::default().fg(Color::Black).bg(color),
@@ -688,16 +697,17 @@ fn draw_footer(f: &mut Frame<'_>, app: &App, area: Rect) {
         Span::raw(" "),
         Span::styled(msg, Style::default().fg(Color::White)),
     ];
-    spans.extend(progress_spans);
-    spans.extend(vec![
-        Span::raw("    "),
-        Span::styled(
-            "←/→:Tabs  Alt+←/→:Tabs  Enter:Run/Commit  Tab:Focus  ?:Help  Esc:Quit",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]);
+    line1_spans.extend(progress_spans);
 
-    let footer = Paragraph::new(Line::from(spans))
+    let line2_spans = vec![Span::styled(
+        "←/→:Tabs  Alt+←/→:Tabs  Enter:Run/Commit  Tab:Focus  ?:Help  Esc:Quit",
+        Style::default().fg(Color::DarkGray),
+    )];
+
+    let footer = Paragraph::new(Text::from(vec![
+        Line::from(line1_spans),
+        Line::from(line2_spans),
+    ]))
         .block(
             Block::default()
                 .borders(Borders::ALL)

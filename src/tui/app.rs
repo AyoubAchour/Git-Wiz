@@ -19,6 +19,10 @@ pub enum ModalKind {
     TextInput,
 }
 
+
+
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmPurpose {
     ClearConfig,

@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap},
     Frame,
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::app::{App, Focus, ModalKind, StatusLevel, Tab};
 use super::tasks::{format_elapsed, spinner_frames};
@@ -304,14 +304,13 @@ fn draw_diff_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
         .border_style(Style::default().fg(Color::DarkGray));
 
     // Basic scrolling by lines.
-    let all_lines: Vec<&str> = app.diff_text.lines().collect();
-    let total = all_lines.len();
+    // Keep allocations proportional to the viewport rather than the whole diff.
+    let total = app.diff_text.lines().count();
 
     let viewport_h = cols[1].height.saturating_sub(2) as usize; // account for borders
     let max_scroll = total.saturating_sub(viewport_h);
 
     let scroll = app.diff_scroll.min(max_scroll);
-    let end = (scroll + viewport_h).min(total);
 
     let visible: Vec<Line> = if total == 0 {
         vec![Line::from(Span::styled(
@@ -319,9 +318,11 @@ fn draw_diff_tab(f: &mut Frame<'_>, app: &mut App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ))]
     } else {
-        all_lines[scroll..end]
-            .iter()
-            .map(|l| Line::from(Span::raw((*l).to_string())))
+        app.diff_text
+            .lines()
+            .skip(scroll)
+            .take(viewport_h)
+            .map(|l| Line::from(Span::raw(l)))
             .collect()
     };
 
@@ -638,7 +639,7 @@ fn render_log_panel(f: &mut Frame<'_>, app: &App, area: Rect) {
         .rev()
         .take(12)
         .rev()
-        .map(|s| Line::from(Span::raw(s.clone())))
+        .map(|s| Line::from(Span::raw(s.as_str())))
         .collect();
 
     f.render_widget(
@@ -927,13 +928,14 @@ fn truncate_to_width(s: &str, max: usize) -> String {
     }
 
     let mut out = String::new();
+    let mut width = 0usize;
     for ch in s.chars() {
-        if UnicodeWidthStr::width(out.as_str()) + UnicodeWidthStr::width(ch.to_string().as_str())
-            >= max.saturating_sub(1)
-        {
+        let ch_w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_w >= max.saturating_sub(1) {
             break;
         }
         out.push(ch);
+        width += ch_w;
     }
     out.push('…');
     out

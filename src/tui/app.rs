@@ -20,9 +20,6 @@ pub enum ModalKind {
 }
 
 
-
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmPurpose {
     ClearConfig,
